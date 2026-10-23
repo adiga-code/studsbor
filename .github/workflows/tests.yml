@@ -1,0 +1,37 @@
+name: tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: studsbor
+          POSTGRES_PASSWORD: studsbor
+          POSTGRES_DB: studsbor_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U studsbor" --health-interval 5s --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements-dev.txt ruff
+      - run: ruff check .
+      - name: Тесты на SQLite
+        run: pytest -q
+      - name: Миграции и тесты на PostgreSQL
+        env:
+          DATABASE_URL: postgresql+asyncpg://studsbor:studsbor@localhost:5432/studsbor_test
+          TEST_DATABASE_URL: postgresql+asyncpg://studsbor:studsbor@localhost:5432/studsbor_test
+        run: |
+          alembic upgrade head
+          alembic check
+          alembic downgrade base
+          pytest -q
