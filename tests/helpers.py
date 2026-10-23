@@ -10,7 +10,7 @@ from aiogram.client.session.base import BaseSession
 from aiogram.enums import ParseMode
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.methods import TelegramMethod
-from aiogram.types import CallbackQuery, Chat, Message, Update, User
+from aiogram.types import CallbackQuery, Chat, Message, PreCheckoutQuery, SuccessfulPayment, Update, User
 
 from app.bot.handlers import build_router
 from app.bot.middlewares import DbSessionMiddleware
@@ -110,6 +110,38 @@ def callback_update(user_id: int, data: str, name: str = "Анна") -> Update:
                 chat=Chat(id=user_id, type="private"),
                 from_user=User(id=1, is_bot=True, first_name="bot"),
                 text="…",
+            ),
+        ),
+    )
+
+
+def pre_checkout_update(user_id: int, payload: str, amount: int, currency: str = "RUB") -> Update:
+    return Update(
+        update_id=next(_ids),
+        pre_checkout_query=PreCheckoutQuery(
+            id=str(next(_ids)),
+            from_user=tg_user(user_id),
+            currency=currency,
+            total_amount=amount,
+            invoice_payload=payload,
+        ),
+    )
+
+
+def successful_payment_update(user_id: int, payload: str, amount: int, charge_id: str) -> Update:
+    return Update(
+        update_id=next(_ids),
+        message=Message(
+            message_id=next(_ids),
+            date=datetime.now(UTC),
+            chat=Chat(id=user_id, type="private"),
+            from_user=tg_user(user_id),
+            successful_payment=SuccessfulPayment(
+                currency="RUB",
+                total_amount=amount,
+                invoice_payload=payload,
+                telegram_payment_charge_id=charge_id,
+                provider_payment_charge_id=f"yk-{charge_id}",
             ),
         ),
     )

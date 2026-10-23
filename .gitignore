@@ -8,4 +8,3 @@ venv/
 logs/
 backups/
 .pytest_cache/
-nginx/certs/

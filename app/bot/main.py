@@ -15,6 +15,7 @@ from app.db.session import get_sessionmaker
 from app.logging_setup import setup_logging
 from app.scheduler import build_scheduler
 from app.services.fundraisers import ensure_general_fund
+from app.services.payments import payments_available
 
 log = logging.getLogger(__name__)
 
@@ -50,7 +51,7 @@ async def main() -> None:
     scheduler.start()
     await bot.set_my_commands(COMMANDS)
     me = await bot.get_me()
-    log.info("Бот @%s запущен, приём платежей: %s", me.username, settings.payments_enabled)
+    log.info("Бот @%s запущен, приём платежей: %s", me.username, payments_available())
     try:
         await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
     finally:

@@ -37,40 +37,5 @@ services:
       migrate:
         condition: service_completed_successfully
 
-  api:
-    build: .
-    restart: unless-stopped
-    env_file: .env
-    environment:
-      DATABASE_URL: postgresql+asyncpg://studsbor:${POSTGRES_PASSWORD}@db:5432/studsbor
-    command: uvicorn app.api.main:app --host 0.0.0.0 --port 8000 --proxy-headers --forwarded-allow-ips="*"
-    volumes:
-      - ./logs:/app/logs
-    depends_on:
-      migrate:
-        condition: service_completed_successfully
-
-  nginx:
-    image: nginx:1.27-alpine
-    restart: unless-stopped
-    ports:
-      - "80:80"
-      - "443:443"
-    environment:
-      DOMAIN: ${DOMAIN:?задайте DOMAIN в .env}
-    volumes:
-      - ./nginx/templates:/etc/nginx/templates:ro
-      - ./nginx/certs:/etc/letsencrypt:ro
-      - ./nginx/www:/var/www/certbot:ro
-    depends_on:
-      - api
-
-  certbot:
-    image: certbot/certbot:v2.11.0
-    profiles: ["certbot"]
-    volumes:
-      - ./nginx/certs:/etc/letsencrypt
-      - ./nginx/www:/var/www/certbot
-
 volumes:
   pgdata:

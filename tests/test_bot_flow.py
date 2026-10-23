@@ -4,13 +4,20 @@ from app.bot import keyboards as kb
 from app.bot import texts
 from app.db.models import Admin, Expense, Fundraiser, Payment, PaymentStatus, User
 from app.services.fundraisers import ensure_general_fund
-from tests.helpers import callback_update, make_bot, make_dispatcher, message_update
+from tests.helpers import (
+    callback_update,
+    make_bot,
+    make_dispatcher,
+    message_update,
+    pre_checkout_update,
+    successful_payment_update,
+)
 
 OWNER = 1000
 STUDENT = 42
 
 
-async def test_donation_flow(maker, gateway):
+async def test_donation_flow(maker):
     async with maker() as s:
         fund = await ensure_general_fund(s)
     bot, api = make_bot()
@@ -24,50 +31,69 @@ async def test_donation_flow(maker, gateway):
     assert choose.reply_markup.inline_keyboard[0][0].callback_data == kb.DonateCb(fundraiser_id=fund.id).pack()
 
     await dp.feed_update(bot, callback_update(STUDENT, kb.DonateCb(fundraiser_id=fund.id).pack()))
+    assert "Тестовый получатель" in api.texts()[-1]
     await dp.feed_update(bot, message_update(STUDENT, "abc"))
     assert "Не получилось распознать" in api.texts()[-1]
-    await dp.feed_update(bot, message_update(STUDENT, "5"))
+    await dp.feed_update(bot, message_update(STUDENT, "50"))
     assert "Минимальная сумма" in api.texts()[-1]
     await dp.feed_update(bot, message_update(STUDENT, "250,50"))
-    confirm = api.texts()[-1]
-    assert "250,50" in confirm and "Тестовый получатель" in confirm and "не является оплатой услуг" in confirm
 
-    await dp.feed_update(bot, callback_update(STUDENT, kb.PayCb(action="confirm").pack()))
-    pay_msg = api.last("EditMessageText")
-    url_button = pay_msg.reply_markup.inline_keyboard[0][0]
-    assert url_button.url == "https://yoomoney.test/yk-1"
-
-    # Повторное нажатие «Перейти к оплате» не создаёт второй платёж.
-    await dp.feed_update(bot, callback_update(STUDENT, kb.PayCb(action="confirm").pack()))
-    assert gateway.create_calls == 1
+    invoice = api.last("SendInvoice")
+    assert invoice.chat_id == STUDENT
+    assert invoice.prices[0].amount == 25050 and invoice.currency == "RUB"
+    assert invoice.provider_token == "381764678:TEST:provider"
+    # После выставления счёта диалог завершён: новое число не создаёт второй счёт.
+    await dp.feed_update(bot, message_update(STUDENT, "300"))
+    assert sum(type(m).__name__ == "SendInvoice" for m in api.requests) == 1
 
     async with maker() as s:
         payment = await s.scalar(select(Payment))
-        assert (payment.amount, payment.status) == (25050, PaymentStatus.PENDING)
+        assert (payment.amount, payment.status) == (25050, PaymentStatus.NEW)
 
-    # Пользователь вернулся до оплаты — статус ещё «ожидает оплаты».
-    check = kb.PayCheckCb(payment_id=payment.id).pack()
-    await dp.feed_update(bot, callback_update(STUDENT, check))
-    assert "ожидает оплаты" in api.last("AnswerCallbackQuery").text
+    await dp.feed_update(bot, pre_checkout_update(STUDENT, invoice.payload, 25050))
+    assert api.last("AnswerPreCheckoutQuery").ok is True
+    await dp.feed_update(bot, pre_checkout_update(STUDENT, invoice.payload, 100))
+    answer = api.last("AnswerPreCheckoutQuery")
+    assert answer.ok is False and "не совпадает" in answer.error_message
 
-    gateway.succeed("yk-1")
-    await dp.feed_update(bot, callback_update(STUDENT, check))
-    assert any("Спасибо" in t for t in api.texts())
-    # Повторная проверка не присылает второе «спасибо».
-    await dp.feed_update(bot, callback_update(STUDENT, check))
+    await dp.feed_update(bot, successful_payment_update(STUDENT, invoice.payload, 25050, "ch-1"))
+    assert "Спасибо" in api.texts()[-1]
+    # Повтор того же события не присылает второе «спасибо» и не меняет сумму.
+    await dp.feed_update(bot, successful_payment_update(STUDENT, invoice.payload, 25050, "ch-1"))
     assert sum("Спасибо" in t for t in api.texts()) == 1
-
-    # Чужой платёж проверить нельзя.
-    await dp.feed_update(bot, callback_update(7, check))
-    assert api.last("AnswerCallbackQuery").text == "Платёж не найден."
 
     await dp.feed_update(bot, message_update(STUDENT, texts.BTN_RATING))
     assert "Анна — 250,50" in api.texts()[-1]
     await dp.feed_update(bot, message_update(STUDENT, texts.BTN_REPORTS))
     assert "250,50" in api.texts()[-1]
 
+    # Владелец отмечает возврат, сделанный в кабинете ЮKassa.
+    await dp.feed_update(bot, message_update(OWNER, f"/refund {payment.id} 50", "Владелец"))
+    assert "Отметить возврат 50" in api.texts()[-1]
+    await dp.feed_update(bot, callback_update(OWNER, kb.ConfirmCb(flow="refund", ok=True).pack(), "Владелец"))
+    assert any("Оформлен возврат 50" in t for t in api.texts())
+    await dp.feed_update(bot, message_update(STUDENT, texts.BTN_RATING))
+    assert "Анна — 200,50" in api.texts()[-1]
 
-async def test_menu_button_interrupts_dialog(maker, gateway):
+
+async def test_quick_amount_and_closed_fundraiser(maker):
+    async with maker() as s:
+        fund = await ensure_general_fund(s)
+    bot, api = make_bot()
+    dp = make_dispatcher()
+    await dp.feed_update(bot, callback_update(STUDENT, kb.DonateCb(fundraiser_id=fund.id).pack()))
+    await dp.feed_update(bot, callback_update(STUDENT, kb.AmountCb(rubles=300).pack()))
+    invoice = api.last("SendInvoice")
+    assert invoice.prices[0].amount == 30000
+
+    async with maker() as s:
+        (await s.get(Fundraiser, fund.id)).status = "closed"
+        await s.commit()
+    await dp.feed_update(bot, pre_checkout_update(STUDENT, invoice.payload, 30000))
+    assert api.last("AnswerPreCheckoutQuery").ok is False
+
+
+async def test_menu_button_interrupts_dialog(maker):
     async with maker() as s:
         fund = await ensure_general_fund(s)
     bot, api = make_bot()
@@ -76,8 +102,7 @@ async def test_menu_button_interrupts_dialog(maker, gateway):
     await dp.feed_update(bot, message_update(STUDENT, texts.BTN_RATING))
     assert "Топ-10" in api.texts()[-1]
     await dp.feed_update(bot, message_update(STUDENT, "500"))
-    assert gateway.create_calls == 0
-    assert not any("Проверьте данные" in t for t in api.texts())
+    assert not any(type(m).__name__ == "SendInvoice" for m in api.requests)
 
 
 async def test_settings(maker):

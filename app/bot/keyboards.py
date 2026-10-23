@@ -19,11 +19,7 @@ class AmountCb(CallbackData, prefix="amt"):
 
 
 class PayCb(CallbackData, prefix="pay"):
-    action: str  # confirm | cancel
-
-
-class PayCheckCb(CallbackData, prefix="chk"):
-    payment_id: int
+    action: str  # cancel
 
 
 class FundCb(CallbackData, prefix="fund"):
@@ -94,22 +90,6 @@ def quick_amounts() -> InlineKeyboardMarkup:
         kb.button(text=f"{rub} ₽", callback_data=AmountCb(rubles=rub))
     kb.button(text="Отмена", callback_data=PayCb(action="cancel"))
     kb.adjust(len(QUICK_AMOUNTS), 1)
-    return kb.as_markup()
-
-
-def confirm_payment() -> InlineKeyboardMarkup:
-    kb = InlineKeyboardBuilder()
-    kb.button(text="✅ Перейти к оплате", callback_data=PayCb(action="confirm"))
-    kb.button(text="Отмена", callback_data=PayCb(action="cancel"))
-    kb.adjust(1)
-    return kb.as_markup()
-
-
-def pay_link(url: str, payment_id: int) -> InlineKeyboardMarkup:
-    kb = InlineKeyboardBuilder()
-    kb.button(text="💳 Оплатить", url=url)
-    kb.button(text="🔄 Проверить оплату", callback_data=PayCheckCb(payment_id=payment_id))
-    kb.adjust(1)
     return kb.as_markup()
 
 

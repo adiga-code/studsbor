@@ -23,4 +23,3 @@ def setup_logging(name: str) -> None:
     root.addHandler(file_handler)
     root.addHandler(stream_handler)
     root.setLevel(settings.log_level.upper())
-    logging.getLogger("httpx").setLevel(logging.WARNING)

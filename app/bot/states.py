@@ -3,7 +3,6 @@ from aiogram.fsm.state import State, StatesGroup
 
 class Donate(StatesGroup):
     amount = State()
-    confirm = State()
 
 
 class Profile(StatesGroup):

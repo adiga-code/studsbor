@@ -15,7 +15,7 @@ from app.bot import keyboards as kb
 from app.bot import texts
 from app.bot.filters import IsAdmin
 from app.bot.handlers.common import show
-from app.bot.sender import send_and_log
+from app.bot.sender import notify_refund_succeeded, send_and_log
 from app.bot.states import Broadcast, ExpenseAdd, FundCreate, MemberSearch, RefundFlow
 from app.config import get_settings
 from app.db.base import utcnow
@@ -25,7 +25,7 @@ from app.services import export, stats
 from app.services import notifications as n
 from app.services.expenses import add_expense
 from app.services.fundraisers import create_fundraiser, list_fundraisers, set_status
-from app.services.payments import PaymentError, create_refund
+from app.services.payments import PaymentError, record_refund, refundable_amount
 from app.services.users import find_users, get_role, list_admins, set_role
 
 log = logging.getLogger(__name__)
@@ -88,7 +88,7 @@ async def _stats_text(session: AsyncSession) -> str:
         f"Плательщиков: {month.payers}, платежей: {month.payments_count}",
         "",
         f"Пользователей: {users_count}, с напоминаниями: {reminders}",
-        f"Ожидают оплаты: {by_status.get(PaymentStatus.PENDING, 0)}",
+        f"Неоплаченных счетов: {by_status.get(PaymentStatus.NEW, 0)}",
     ]
     if by_status.get(PaymentStatus.REVIEW):
         lines.append(f"⚠️ На ручной проверке: {by_status[PaymentStatus.REVIEW]} (см. логи и /payment &lt;id&gt;)")
@@ -125,7 +125,8 @@ async def cmd_payment(message: Message, command: CommandObject, session: AsyncSe
         f"Сбор: {texts.esc(payment.fundraiser.title)}\n"
         f"Участник: {texts.esc(payment.user.display_name or '—')} (tg {payment.user.telegram_id})\n"
         f"Создан: {texts.fmt_datetime(payment.created_at)}, оплачен: {texts.fmt_datetime(payment.paid_at)}\n"
-        f"ЮKassa: <code>{texts.esc(payment.yookassa_payment_id or '—')}</code>"
+        f"ЮKassa: <code>{texts.esc(payment.provider_payment_charge_id or '—')}</code>\n"
+        f"Telegram: <code>{texts.esc(payment.telegram_payment_charge_id or '—')}</code>"
     )
 
 
@@ -530,58 +531,71 @@ async def broadcast_confirm(
 
 
 # --- Возвраты (только владелец) ------------------------------------------
+# Telegram Payments не умеет возвращать платежи: деньги возвращают в личном кабинете
+# ЮKassa, а здесь владелец отмечает возврат, чтобы поправить статистику и рейтинг.
+
+REFUND_USAGE = (
+    "Сначала оформите возврат в личном кабинете ЮKassa, затем отметьте его здесь:\n"
+    "/refund &lt;id платежа&gt; [сумма в рублях] — без суммы полный возврат.\n"
+    "id платежа есть в карточке участника и в /export."
+)
 
 
 @router.message(Command("refund"), IsAdmin(owner_only=True))
 async def cmd_refund(message: Message, command: CommandObject, state: FSMContext, session: AsyncSession) -> None:
     args = (command.args or "").split()
     if not args or not args[0].isdigit():
-        await message.answer("Использование: /refund &lt;id платежа&gt; [сумма в рублях]\nБез суммы — полный возврат.")
+        await message.answer(REFUND_USAGE)
         return
     payment = await session.get(Payment, int(args[0]))
     if payment is None or payment.status != PaymentStatus.SUCCEEDED:
-        await message.answer("Вернуть можно только успешный платёж.")
+        await message.answer("Отметить возврат можно только по успешному платежу.")
         return
     amount = parse_rub(args[1]) if len(args) > 1 else None
     if len(args) > 1 and amount is None:
         await message.answer("Не понял сумму возврата.")
         return
+    available = await refundable_amount(session, payment)
     await state.set_state(RefundFlow.confirm)
     await state.update_data(payment_id=payment.id, amount=amount)
     await message.answer(
-        f"Вернуть {format_rub(amount) if amount else 'полную сумму'} по платежу #{payment.id} "
-        f"({format_rub(payment.amount)}, {texts.esc(payment.fundraiser.title)}, "
-        f"tg {payment.user.telegram_id})?",
+        f"Отметить возврат {format_rub(amount or available)} по платежу #{payment.id}?\n"
+        f"Платёж: {format_rub(payment.amount)}, {texts.esc(payment.fundraiser.title)}, "
+        f"tg {payment.user.telegram_id}, ЮKassa <code>{texts.esc(payment.provider_payment_charge_id or '—')}</code>\n"
+        f"Доступно к возврату: {format_rub(available)}.\n\n"
+        "Подтверждайте, только если деньги уже возвращены в кабинете ЮKassa.",
         reply_markup=kb.confirm("refund"),
     )
 
 
 @router.message(Command("refund"))
 async def cmd_refund_denied(message: Message) -> None:
-    await message.answer("Оформлять возвраты может только владелец.")
+    await message.answer("Отмечать возвраты может только владелец.")
 
 
 @router.callback_query(RefundFlow.confirm, kb.ConfirmCb.filter(F.flow == "refund"), IsAdmin(owner_only=True))
 async def refund_confirm(
-    callback: CallbackQuery, callback_data: kb.ConfirmCb, state: FSMContext, session: AsyncSession, db_user: User
+    callback: CallbackQuery,
+    callback_data: kb.ConfirmCb,
+    state: FSMContext,
+    session: AsyncSession,
+    db_user: User,
+    bot: Bot,
 ) -> None:
     data = await state.get_data()
     await state.clear()
     if not callback_data.ok:
-        await show(callback, "Возврат отменён.")
+        await show(callback, "Отменено.")
         return
     try:
-        refund = await create_refund(
+        refund = await record_refund(
             session, data["payment_id"], data["amount"], db_user, reason=f"Возврат взноса #{data['payment_id']}"
         )
     except PaymentError as exc:
         await show(callback, f"❌ {texts.esc(exc)}")
         return
-    await show(
-        callback,
-        f"Возврат {format_rub(refund.amount)} создан, статус: {refund.status}. "
-        "Статистика и рейтинг уменьшатся после подтверждения возврата ЮKassa.",
-    )
+    await show(callback, f"Возврат {format_rub(refund.amount)} учтён: статистика и рейтинг обновлены.")
+    await notify_refund_succeeded(bot, session, refund)
 
 
 @router.callback_query(StateFilter(None), kb.ConfirmCb.filter())

@@ -1,8 +1,8 @@
 """initial schema
 
-Revision ID: 3dda2b3671d6
+Revision ID: c12e6af18580
 Revises: 
-Create Date: 2026-10-23 20:05:29.288677
+Create Date: 2026-10-23 20:27:29.333786
 
 """
 from typing import Sequence, Union
@@ -12,7 +12,7 @@ import sqlalchemy as sa
 
 
 # revision identifiers, used by Alembic.
-revision: str = '3dda2b3671d6'
+revision: str = 'c12e6af18580'
 down_revision: Union[str, Sequence[str], None] = None
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
@@ -93,12 +93,11 @@ def upgrade() -> None:
     sa.Column('fundraiser_id', sa.BigInteger(), nullable=False),
     sa.Column('amount', sa.BigInteger(), nullable=False),
     sa.Column('currency', sa.String(length=3), nullable=False),
-    sa.Column('idempotence_key', sa.String(length=64), nullable=False),
-    sa.Column('yookassa_payment_id', sa.String(length=64), nullable=True),
+    sa.Column('invoice_payload', sa.String(length=64), nullable=False),
+    sa.Column('telegram_payment_charge_id', sa.String(length=128), nullable=True),
+    sa.Column('provider_payment_charge_id', sa.String(length=128), nullable=True),
     sa.Column('status', sa.String(length=32), nullable=False),
-    sa.Column('description', sa.String(length=128), nullable=False),
-    sa.Column('confirmation_url', sa.Text(), nullable=True),
-    sa.Column('cancellation_reason', sa.String(length=64), nullable=True),
+    sa.Column('description', sa.String(length=255), nullable=False),
     sa.Column('created_at', sa.DateTime(timezone=True), nullable=False),
     sa.Column('updated_at', sa.DateTime(timezone=True), nullable=False),
     sa.Column('paid_at', sa.DateTime(timezone=True), nullable=True),
@@ -106,8 +105,8 @@ def upgrade() -> None:
     sa.ForeignKeyConstraint(['fundraiser_id'], ['fundraisers.id'], name=op.f('fk_payments_fundraiser_id_fundraisers')),
     sa.ForeignKeyConstraint(['user_id'], ['users.id'], name=op.f('fk_payments_user_id_users')),
     sa.PrimaryKeyConstraint('id', name=op.f('pk_payments')),
-    sa.UniqueConstraint('idempotence_key', name=op.f('uq_payments_idempotence_key')),
-    sa.UniqueConstraint('yookassa_payment_id', name=op.f('uq_payments_yookassa_payment_id'))
+    sa.UniqueConstraint('invoice_payload', name=op.f('uq_payments_invoice_payload')),
+    sa.UniqueConstraint('telegram_payment_charge_id', name=op.f('uq_payments_telegram_payment_charge_id'))
     )
     op.create_index(op.f('ix_payments_fundraiser_id'), 'payments', ['fundraiser_id'], unique=False)
     op.create_index('ix_payments_status_paid_at', 'payments', ['status', 'paid_at'], unique=False)
@@ -127,7 +126,6 @@ def upgrade() -> None:
     op.create_table('refunds',
     sa.Column('id', sa.BigInteger(), nullable=False),
     sa.Column('payment_id', sa.BigInteger(), nullable=False),
-    sa.Column('yookassa_refund_id', sa.String(length=64), nullable=False),
     sa.Column('amount', sa.BigInteger(), nullable=False),
     sa.Column('status', sa.String(length=16), nullable=False),
     sa.Column('reason', sa.String(length=255), nullable=True),
@@ -137,8 +135,7 @@ def upgrade() -> None:
     sa.CheckConstraint('amount > 0', name=op.f('ck_refunds_amount_positive')),
     sa.ForeignKeyConstraint(['created_by'], ['users.id'], name=op.f('fk_refunds_created_by_users')),
     sa.ForeignKeyConstraint(['payment_id'], ['payments.id'], name=op.f('fk_refunds_payment_id_payments')),
-    sa.PrimaryKeyConstraint('id', name=op.f('pk_refunds')),
-    sa.UniqueConstraint('yookassa_refund_id', name=op.f('uq_refunds_yookassa_refund_id'))
+    sa.PrimaryKeyConstraint('id', name=op.f('pk_refunds'))
     )
     op.create_index(op.f('ix_refunds_payment_id'), 'refunds', ['payment_id'], unique=False)
     # ### end Alembic commands ###

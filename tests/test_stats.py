@@ -13,7 +13,7 @@ MSK = ZoneInfo("Europe/Moscow")
 
 async def _paid(session, user, fund, amount, paid_at):
     payment = Payment(
-        user_id=user.id, fundraiser_id=fund.id, amount=amount, idempotence_key=f"k{amount}{paid_at}{user.id}",
+        user_id=user.id, fundraiser_id=fund.id, amount=amount, invoice_payload=f"k{amount}{paid_at:%s}{user.id}",
         status=PaymentStatus.SUCCEEDED, paid_at=paid_at, description="",
     )
     session.add(payment)

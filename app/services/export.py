@@ -39,13 +39,14 @@ async def payments_csv(session: AsyncSession, tz: ZoneInfo) -> bytes:
             p.user.telegram_id,
             p.user.username or "",
             p.user.display_name or "",
-            p.yookassa_payment_id or "",
+            p.provider_payment_charge_id or "",
+            p.telegram_payment_charge_id or "",
         ]
         for p in payments
     ]
     header = [
         "id", "создан", "оплачен", "статус", "сумма", "возвращено", "валюта", "сбор_id", "сбор",
-        "telegram_id", "username", "имя", "yookassa_id",
+        "telegram_id", "username", "имя", "yookassa_id", "telegram_charge_id",
     ]
     return _to_bytes(header, rows)
 

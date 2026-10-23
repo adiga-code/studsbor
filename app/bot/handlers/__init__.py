@@ -12,6 +12,7 @@ def build_router() -> Router:
     # Бот работает только в личных сообщениях.
     root.message.filter(F.chat.type == "private")
     root.include_routers(
+        donate.payment_router,
         common.router,
         menu.router,
         admin.router,

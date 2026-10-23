@@ -4,9 +4,9 @@
 set -eu
 
 [ $# -eq 1 ] || { echo "Использование: $0 <файл.sql.gz>"; exit 1; }
-docker compose stop bot api
+docker compose stop bot
 docker compose exec -T db psql -U studsbor -d postgres -c "DROP DATABASE IF EXISTS studsbor WITH (FORCE);"
 docker compose exec -T db psql -U studsbor -d postgres -c "CREATE DATABASE studsbor OWNER studsbor;"
 gunzip -c "$1" | docker compose exec -T db psql -U studsbor -d studsbor
-docker compose start bot api
+docker compose start bot
 echo "Восстановлено из $1"

@@ -12,6 +12,7 @@ from app.db.models import Fundraiser, User
 from app.money import format_rub
 from app.services import stats
 from app.services.fundraisers import list_fundraisers
+from app.services.payments import payments_available
 
 router = Router(name="public")
 
@@ -54,7 +55,7 @@ async def fundraiser_view(callback: CallbackQuery, callback_data: kb.FundCb, ses
     await show(
         callback,
         texts.fundraiser_card(fundraiser, collected, spent),
-        kb.fundraiser_actions(fundraiser, get_settings().payments_enabled),
+        kb.fundraiser_actions(fundraiser, payments_available()),
     )
 
 
@@ -71,7 +72,7 @@ async def fundraiser_expenses(
     await show(
         callback,
         f"<b>Расходы: {texts.esc(fundraiser.title)}</b>\n\n{body}",
-        kb.fundraiser_actions(fundraiser, get_settings().payments_enabled),
+        kb.fundraiser_actions(fundraiser, payments_available()),
     )
 
 

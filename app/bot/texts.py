@@ -37,12 +37,10 @@ PAYMENTS_DISABLED = (
 )
 
 STATUS_TITLES = {
-    "new": "создаётся",
-    "pending": "ожидает оплаты",
-    "waiting_for_capture": "ожидает подтверждения",
+    "new": "счёт выставлен",
     "succeeded": "оплачен",
-    "canceled": "отменён",
-    "failed": "не создан",
+    "canceled": "счёт устарел",
+    "failed": "счёт не выставлен",
     "review": "на проверке",
 }
 

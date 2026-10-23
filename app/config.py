@@ -18,28 +18,26 @@ class Settings(BaseSettings):
 
     # Приём платежей включается только после согласования схемы с вузом и ЮKassa.
     payments_enabled: bool = False
-    yookassa_shop_id: str = ""
-    yookassa_secret_key: str = ""
-    yookassa_api_url: str = "https://api.yookassa.ru/v3"
-    # Секрет в пути webhook-а: https://<домен>/yookassa/webhook/<secret>
-    yookassa_webhook_secret: str = ""
-    # Проверять, что уведомление пришло с IP-адресов ЮKassa.
-    yookassa_check_ip: bool = True
-    # Заголовок, в котором Nginx передаёт реальный IP клиента.
-    real_ip_header: str = "X-Real-IP"
-    payment_return_url: str = ""
+    # Токен провайдера из @BotFather → Bot Settings → Payments (ЮKassa Test или Live).
+    payment_provider_token: str = ""
+    # Чек по 54-ФЗ: ЮKassa получит данные чека, а Telegram попросит у плательщика e-mail.
+    receipt_enabled: bool = False
+    receipt_vat_code: int = 1
+    receipt_payment_subject: str = "another"
+    receipt_payment_mode: str = "full_payment"
 
     # Кому перечисляются средства — показывается перед оплатой.
     recipient_name: str = "Получатель не указан"
-    min_amount_rub: int = 10
+    # У Telegram есть свой минимум суммы (около 1 $ в рублях) — ниже счёт не выставится.
+    min_amount_rub: int = 100
     max_amount_rub: int = 100_000
 
     timezone: str = "Europe/Moscow"
     # Напоминания: проверка раз в день в указанный час, рассылка не раньше указанного числа месяца.
     reminder_hour: int = 12
     reminder_day: int = 1
-    # Как часто сверять «зависшие» платежи с ЮKassa (минуты).
-    pending_sync_minutes: int = 10
+    # Через сколько часов неоплаченный счёт перестаёт приниматься.
+    invoice_ttl_hours: int = 24
 
     log_level: str = "INFO"
     log_dir: str = "logs"
@@ -54,14 +52,6 @@ class Settings(BaseSettings):
     @property
     def tz(self) -> ZoneInfo:
         return ZoneInfo(self.timezone)
-
-    @property
-    def return_url(self) -> str:
-        if self.payment_return_url:
-            return self.payment_return_url
-        if self.bot_username:
-            return f"https://t.me/{self.bot_username}"
-        return "https://t.me"
 
 
 @lru_cache

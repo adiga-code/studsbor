@@ -22,23 +22,15 @@ class FundraiserStatus(StrEnum):
 
 
 class PaymentStatus(StrEnum):
-    NEW = "new"  # запись создана, платёж в ЮKassa ещё не создан
-    PENDING = "pending"
-    WAITING_FOR_CAPTURE = "waiting_for_capture"
+    NEW = "new"  # счёт выставлен в Telegram, ждёт оплаты
     SUCCEEDED = "succeeded"
-    CANCELED = "canceled"
-    FAILED = "failed"  # не удалось создать платёж в ЮKassa
-    REVIEW = "review"  # данные ЮKassa не совпали с нашими — требуется ручная проверка
-
-    @classmethod
-    def terminal(cls) -> set["PaymentStatus"]:
-        return {cls.SUCCEEDED, cls.CANCELED, cls.FAILED, cls.REVIEW}
+    CANCELED = "canceled"  # счёт устарел и больше не принимается
+    FAILED = "failed"  # Telegram не принял счёт (например, сумма вне лимитов)
+    REVIEW = "review"  # оплата пришла, но не совпала с нашими данными — нужна ручная проверка
 
 
 class RefundStatus(StrEnum):
-    PENDING = "pending"
     SUCCEEDED = "succeeded"
-    CANCELED = "canceled"
 
 
 class AdminRole(StrEnum):
@@ -110,12 +102,13 @@ class Payment(Base):
     fundraiser_id: Mapped[int] = mapped_column(ForeignKey("fundraisers.id"), index=True)
     amount: Mapped[int] = mapped_column(BigInteger)  # копейки
     currency: Mapped[str] = mapped_column(String(3), default="RUB")
-    idempotence_key: Mapped[str] = mapped_column(String(64), unique=True)
-    yookassa_payment_id: Mapped[str | None] = mapped_column(String(64), unique=True)
+    # Уникальный payload счёта Telegram — по нему сопоставляется оплата.
+    invoice_payload: Mapped[str] = mapped_column(String(64), unique=True)
+    # Идентификаторы операции: в Telegram и у платёжного провайдера (ЮKassa).
+    telegram_payment_charge_id: Mapped[str | None] = mapped_column(String(128), unique=True)
+    provider_payment_charge_id: Mapped[str | None] = mapped_column(String(128))
     status: Mapped[str] = mapped_column(String(32), default=PaymentStatus.NEW)
-    description: Mapped[str] = mapped_column(String(128), default="")
-    confirmation_url: Mapped[str | None] = mapped_column(Text)
-    cancellation_reason: Mapped[str | None] = mapped_column(String(64))
+    description: Mapped[str] = mapped_column(String(255), default="")
     created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow, onupdate=utcnow)
     paid_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
@@ -130,16 +123,18 @@ class Payment(Base):
 
 
 class Refund(Base):
-    """Возвраты учитываются отдельно, чтобы не завышать рейтинг и статистику."""
+    """Возвраты учитываются отдельно, чтобы не завышать рейтинг и статистику.
+
+    Сам возврат делается в личном кабинете ЮKassa, а здесь владелец его отмечает.
+    """
 
     __tablename__ = "refunds"
     __table_args__ = (CheckConstraint("amount > 0", name="amount_positive"),)
 
     id: Mapped[int] = mapped_column(BigIntPK, primary_key=True)
     payment_id: Mapped[int] = mapped_column(ForeignKey("payments.id"), index=True)
-    yookassa_refund_id: Mapped[str] = mapped_column(String(64), unique=True)
     amount: Mapped[int] = mapped_column(BigInteger)
-    status: Mapped[str] = mapped_column(String(16), default=RefundStatus.PENDING)
+    status: Mapped[str] = mapped_column(String(16), default=RefundStatus.SUCCEEDED)
     reason: Mapped[str | None] = mapped_column(String(255))
     created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
     created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
@@ -191,7 +186,7 @@ class NotificationLog(Base):
 
 
 class PaymentEvent(Base):
-    """Журнал обработанных событий ЮKassa; уникальный ключ защищает от повторной обработки."""
+    """Журнал обработанных платёжных событий; уникальный ключ защищает от повторной обработки."""
 
     __tablename__ = "payment_events"
 

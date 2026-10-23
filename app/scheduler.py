@@ -1,15 +1,14 @@
-"""Фоновые задачи: напоминания, закрытие просроченных сборов, сверка платежей."""
+"""Фоновые задачи: напоминания, закрытие просроченных сборов и устаревших счетов."""
 
 import asyncio
 import logging
-from datetime import timedelta
 
 from aiogram import Bot
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from app.bot import keyboards as kb
 from app.bot import texts
-from app.bot.sender import notify_payment_succeeded, send_and_log
+from app.bot.sender import send_and_log
 from app.config import get_settings
 from app.db.base import utcnow
 from app.db.session import get_sessionmaker
@@ -17,8 +16,7 @@ from app.money import format_rub
 from app.services import notifications as n
 from app.services import stats
 from app.services.fundraisers import close_expired, list_fundraisers
-from app.services.payments import pending_payments, refresh_payment
-from app.services.yookassa import YooKassaError
+from app.services.payments import expire_stale_invoices, payments_available
 
 log = logging.getLogger(__name__)
 
@@ -44,7 +42,7 @@ async def reminder_text(session) -> str:
 
 async def send_reminders(bot: Bot) -> None:
     settings = get_settings()
-    if not settings.payments_enabled:
+    if not payments_available():
         log.info("Приём платежей выключен — напоминания не отправляются")
         return
     async with get_sessionmaker()() as session:
@@ -62,27 +60,13 @@ async def send_reminders(bot: Bot) -> None:
         log.info("Напоминания: отправлено %s из %s", sent, len(users))
 
 
-async def close_expired_fundraisers() -> None:
+async def nightly_cleanup() -> None:
+    """Закрывает просроченные сборы и помечает устаревшие неоплаченные счета."""
     async with get_sessionmaker()() as session:
         closed = await close_expired(session)
-        if closed:
-            log.info("Закрыто просроченных сборов: %s", closed)
-
-
-async def sync_pending_payments(bot: Bot) -> None:
-    """Сверка на случай потерянных уведомлений ЮKassa."""
-    if not get_settings().payments_enabled:
-        return
-    async with get_sessionmaker()() as session:
-        for payment in await pending_payments(session, older_than=timedelta(minutes=5)):
-            try:
-                result = await refresh_payment(session, payment)
-            except YooKassaError as exc:
-                log.warning("Сверка платежа %s не удалась: %s", payment.id, exc)
-                continue
-            if result and result.newly_succeeded:
-                log.info("Платёж %s подтверждён при сверке", payment.id)
-                await notify_payment_succeeded(bot, session, result.payment)
+        expired = await expire_stale_invoices(session)
+    if closed or expired:
+        log.info("Закрыто сборов: %s, устаревших счетов: %s", closed, expired)
 
 
 def build_scheduler(bot: Bot) -> AsyncIOScheduler:
@@ -93,11 +77,7 @@ def build_scheduler(bot: Bot) -> AsyncIOScheduler:
         id="reminders", max_instances=1, coalesce=True, misfire_grace_time=3600,
     )
     scheduler.add_job(
-        close_expired_fundraisers, "cron", hour=0, minute=5,
-        id="close_expired", max_instances=1, coalesce=True,
-    )
-    scheduler.add_job(
-        sync_pending_payments, "interval", minutes=settings.pending_sync_minutes, args=[bot],
-        id="sync_pending", max_instances=1, coalesce=True,
+        nightly_cleanup, "cron", hour=0, minute=5,
+        id="nightly_cleanup", max_instances=1, coalesce=True,
     )
     return scheduler
