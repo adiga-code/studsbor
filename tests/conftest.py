@@ -8,6 +8,8 @@ os.environ.update(
         "PAYMENT_PROVIDER_TOKEN": "381764678:TEST:provider",
         "RECIPIENT_NAME": "Тестовый получатель",
         "OWNER_TELEGRAM_IDS": "1000",
+        "WEBHOOK_SECRET": "hook-secret",
+        "CRON_SECRET": "cron-secret",
         "LOG_DIR": os.environ.get("LOG_DIR", "/tmp/studsbor-test-logs"),
     }
 )

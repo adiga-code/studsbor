@@ -196,3 +196,17 @@ class PaymentEvent(Base):
     payment_id: Mapped[int | None] = mapped_column(ForeignKey("payments.id"), index=True)
     payload: Mapped[str | None] = mapped_column(Text)
     processed_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
+
+
+class FsmState(Base):
+    """Состояние диалогов бота (ввод суммы, создание сбора и т. п.).
+
+    Хранится в базе, чтобы переживать перезапуск бота и работать в бессерверном режиме.
+    """
+
+    __tablename__ = "fsm_states"
+
+    key: Mapped[str] = mapped_column(String(255), primary_key=True)
+    state: Mapped[str | None] = mapped_column(String(255))
+    data: Mapped[str] = mapped_column(Text, default="{}")
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow, onupdate=utcnow)

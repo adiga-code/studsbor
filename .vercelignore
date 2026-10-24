@@ -1,0 +1,7 @@
+tests
+scripts
+logs
+backups
+Dockerfile
+docker-compose.yml
+.github

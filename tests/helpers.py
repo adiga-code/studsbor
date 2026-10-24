@@ -8,12 +8,10 @@ from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.client.session.base import BaseSession
 from aiogram.enums import ParseMode
-from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.methods import TelegramMethod
 from aiogram.types import CallbackQuery, Chat, Message, PreCheckoutQuery, SuccessfulPayment, Update, User
 
-from app.bot.handlers import build_router
-from app.bot.middlewares import DbSessionMiddleware
+from app.bot.dispatcher import create_dispatcher
 
 _ids = itertools.count(1)
 
@@ -69,13 +67,13 @@ _dispatcher: Dispatcher | None = None
 
 
 def make_dispatcher() -> Dispatcher:
-    """Один диспетчер на все тесты (роутеры подключаются однократно), но с чистым FSM."""
+    """Один диспетчер на все тесты: роутеры подключаются однократно.
+
+    FSM хранится в базе (SqlStorage), а база пересоздаётся для каждого теста.
+    """
     global _dispatcher
     if _dispatcher is None:
-        _dispatcher = Dispatcher()
-        _dispatcher.update.outer_middleware(DbSessionMiddleware())
-        _dispatcher.include_router(build_router())
-    _dispatcher.fsm.storage = MemoryStorage()
+        _dispatcher = create_dispatcher()
     return _dispatcher
 
 

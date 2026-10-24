@@ -24,27 +24,33 @@
 
 ## Архитектура
 
-```
-Студент ─▶ Telegram ─▶ бот (aiogram 3, long polling) ─▶ PostgreSQL
-              ▲  счёт / оплата        │ планировщик (APScheduler)
-              └── ЮKassa (подключена в @BotFather)
-```
+Бот работает в одном из двух режимов с одним и тем же кодом:
 
-Один процесс — бот. Оплата проходит через Telegram Payments: ЮKassa подключена к боту
-в @BotFather, поэтому не нужны ни вебхуки, ни домен, ни HTTPS — бот работает на любом
-сервере с доступом в интернет.
+| | Бесплатно: Vercel + Supabase | Свой сервер: Docker |
+| --- | --- | --- |
+| Как бот получает сообщения | вебхук: Telegram вызывает функцию `/api/telegram` | long polling |
+| Регулярные задачи | Vercel Cron раз в сутки (`/api/cron/daily`) | APScheduler внутри процесса |
+| База | Supabase (PostgreSQL) | PostgreSQL в Docker |
+| Стоимость | 0 ₽ в пределах бесплатных тарифов | VPS от ~200–300 ₽/мес |
+
+Оплата в обоих режимах идёт через Telegram Payments: ЮKassa подключена к боту в @BotFather.
 
 ```
 app/
-  config.py            настройки из .env
+  config.py            настройки из переменных окружения / .env
   money.py             разбор и форматирование сумм (копейки)
-  db/                  модели SQLAlchemy 2, сессии
+  db/                  модели SQLAlchemy 2, подключение (в т. ч. к пулеру Supabase)
   services/            бизнес-логика без Telegram:
     payments.py          счета, проверка перед оплатой, учёт оплат и возвратов
     stats.py             рейтинги, суммы, отчётность
     fundraisers.py, expenses.py, users.py, notifications.py, export.py
-  bot/                 Telegram-интерфейс: handlers/, keyboards, тексты
-  scheduler.py         напоминания, закрытие просроченных сборов и устаревших счетов
+  bot/                 Telegram-интерфейс: handlers/, клавиатуры, тексты,
+                       storage.py — состояния диалогов в базе
+  jobs.py              напоминания, закрытие просроченных сборов и устаревших счетов
+  web.py               режим вебхука: /api/telegram, /api/cron/daily, /api/setup
+  scheduler.py         планировщик для режима polling
+index.py, vercel.json  точка входа и cron для Vercel
+supabase/schema.sql    схема базы одним SQL-файлом (запасной вариант для Supabase)
 migrations/            Alembic
 tests/                 pytest (SQLite или PostgreSQL)
 ```
@@ -52,7 +58,7 @@ tests/                 pytest (SQLite или PostgreSQL)
 ### База данных
 
 `users`, `fundraisers`, `payments`, `refunds`, `expenses`, `admins`, `notification_logs`,
-`payment_events`.
+`payment_events`, `fsm_states` (состояния диалогов бота).
 
 - Деньги — целые копейки в `BIGINT`, без `float`.
 - `payments.invoice_payload` (идентификатор счёта) и `payments.telegram_payment_charge_id`
@@ -63,6 +69,8 @@ tests/                 pytest (SQLite или PostgreSQL)
 - Рейтинг за месяц считается по дате успешной оплаты в часовом поясе `Europe/Moscow`.
 - `payment_events` — журнал обработанных оплат с уникальным ключом
   `tg:<telegram_payment_charge_id>`.
+- На всех таблицах включён Row Level Security без политик: в Supabase это закрывает их
+  от публичного REST API. Бот подключается владельцем таблиц, на него RLS не действует.
 
 ### Как обрабатываются платежи
 
@@ -89,9 +97,80 @@ tests/                 pytest (SQLite или PostgreSQL)
 отмечает его в боте командой `/refund`: статистика и рейтинг уменьшаются, студент получает
 уведомление.
 
+## Бесплатный запуск: Vercel + Supabase
+
+### 1. База в Supabase
+
+1. Создайте проект на [supabase.com](https://supabase.com) (бесплатный тариф). Регион —
+   **Central EU (Frankfurt)**, запомните пароль базы.
+2. **Connect** (вверху проекта) → вкладка **Connection String** → **Session pooler** →
+   скопируйте строку и подставьте пароль вместо `[YOUR-PASSWORD]`:
+   `postgresql://postgres.<id>:<пароль>@aws-0-eu-central-1.pooler.supabase.com:5432/postgres`
+
+   Нужен именно **Session pooler**: прямое подключение (`db.<id>.supabase.co`) работает
+   только по IPv6, которого нет на Vercel. Transaction pooler (порт 6543) тоже поддерживается.
+
+### 2. Проект на Vercel
+
+1. **Add New → Project** → импортируйте репозиторий. Vercel сам найдёт `index.py`.
+2. **Settings → Environment Variables** (для Production):
+
+   | Переменная | Значение |
+   | --- | --- |
+   | `BOT_TOKEN` | токен бота от @BotFather |
+   | `BOT_USERNAME` | имя бота без @ |
+   | `DATABASE_URL` | строка Session pooler из Supabase |
+   | `OWNER_TELEGRAM_IDS` | ваш Telegram ID (узнать: @userinfobot) |
+   | `WEBHOOK_SECRET` | случайная строка из букв, цифр, `_` и `-` |
+   | `CRON_SECRET` | ещё одна случайная строка |
+   | `RECIPIENT_NAME` | наименование получателя средств |
+   | `PAYMENT_PROVIDER_TOKEN` | токен ЮKassa из @BotFather (сначала Test) |
+   | `PAYMENTS_ENABLED` | `true`, когда готовы принимать взносы |
+
+   Случайную строку можно получить так: `python -c "import secrets; print(secrets.token_urlsafe(32))"`
+   или любым генератором паролей (без спецсимволов, кроме `_` и `-`).
+3. Регион функций — **Frankfurt (fra1)**, он уже задан в `vercel.json`. Это рядом с базой,
+   чтобы бот успевал подтвердить оплату за отведённые Telegram 10 секунд.
+4. Cron работает только для **production**-деплоя. Production-ветка задаётся в
+   **Settings → Git** (обычно `main`) — слейте туда изменения или укажите свою ветку.
+5. Сделайте **Redeploy**, чтобы переменные окружения применились.
+
+### 3. Подключение бота
+
+Откройте в браузере `https://<ваш-проект>.vercel.app/api/setup?key=<WEBHOOK_SECRET>`.
+Страница применит миграции (создаст таблицы), создаст общий фонд и зарегистрирует вебхук.
+Ответ должен содержать `"migrations": "ok"` и `"status": "Готово: напишите боту /start"`.
+
+Если миграции не применились, откройте в Supabase **SQL Editor**, вставьте содержимое
+`supabase/schema.sql`, нажмите **Run** и снова откройте ссылку `/api/setup`.
+
+После каждого обновления схемы базы (новые файлы в `migrations/versions`) откройте
+`/api/setup` ещё раз. Повторный вызов безопасен.
+
+### Ограничения бесплатных тарифов
+
+- **Cron на Vercel Hobby — раз в сутки**, около 12:00 МСК (точность — в пределах часа).
+  Этого достаточно для напоминаний и ночной уборки.
+- **Функция работает не дольше 300 секунд.** Рассылка `/broadcast` успевает примерно
+  на 2–3 тысячи человек. Напоминания укладываются в 200 секунд; кому не хватило времени,
+  получат их на следующий день.
+- **Supabase приостанавливает бесплатный проект после недели без активности.** Ежедневный
+  cron обращается к базе, так что этого быть не должно. Если проект всё-таки «уснул», его
+  включают в панели Supabase. Объём базы на бесплатном тарифе — 500 МБ, для бота это много.
+- **Тариф Vercel Hobby предназначен для некоммерческого использования.** Студенческий
+  фонд под это подходит, но условия лучше перечитать.
+- **Пулер Supabase:** соединение шифруется, но сертификат сервера не проверяется.
+- Логи — в панели Vercel: **Deployments → Functions / Logs**.
+- **Резервные копии:** в бесплатном Supabase их нет. Периодически выгружайте `/export`
+  или делайте дамп: `pg_dump "<строка Session pooler>" > backup.sql`.
+
+**Не запускайте одновременно** Docker-версию и Vercel с одним токеном. Docker-бот при старте
+снимает вебхук, а `/api/setup` его снова ставит, поэтому работать будет тот, кто запущен последним.
+
 ## Запуск на сервере (Docker Compose)
 
-Нужны: любой сервер (VPS) с Docker и Docker Compose и токен бота от
+Альтернатива бесплатному варианту — без ограничений по времени и с локальными
+резервными копиями. Нужны: любой сервер (VPS) с Docker и Docker Compose и токен бота от
 [@BotFather](https://t.me/BotFather). Домен и HTTPS не нужны.
 
 ```bash
@@ -113,14 +192,15 @@ docker compose ps
 
 1. В @BotFather: ваш бот → **Bot Settings → Payments** → **ЮKassa Test**. Пройдите
    подключение в боте ЮKassa и вернитесь — BotFather покажет токен вида `381764678:TEST:…`.
-2. Впишите его в `.env`: `PAYMENT_PROVIDER_TOKEN=…`, `PAYMENTS_ENABLED=true`, а также
-   `RECIPIENT_NAME` — точное наименование получателя. Выполните `docker compose up -d`.
+2. Впишите его в переменные окружения (`.env` или настройки Vercel):
+   `PAYMENT_PROVIDER_TOKEN=…`, `PAYMENTS_ENABLED=true`, а также `RECIPIENT_NAME` —
+   точное наименование получателя. Перезапустите бота: `docker compose up -d` или Redeploy на Vercel.
 3. Проверьте в боте: взнос тестовой картой ЮKassa (`5555 5555 5555 4477`, любой срок в
    будущем и любой CVC) → «Спасибо», сумма в «Отчётности» и рейтинге; отказ при закрытом
    сборе; отметка возврата через `/refund`.
 4. Когда схема согласована (см. ниже), подключите **ЮKassa Live**, замените токен на боевой
    (`…:LIVE:…`) и перезапустите бота. Тестовые платежи останутся в базе — перед запуском
-   их можно удалить, восстановив пустую базу или очистив таблицы платежей.
+   их можно удалить, создав базу заново или очистив таблицы платежей.
 
 Минимальная сумма: Telegram не выставляет счёт меньше своего минимума (около 1 $ в рублях,
 зависит от курса). Если `MIN_AMOUNT_RUB` окажется ниже, студент увидит «Не удалось
@@ -157,7 +237,8 @@ docker compose ps
 
 ### Напоминания
 
-Каждый день в `REMINDER_HOUR` (по `TIMEZONE`) бот проверяет, кому пора напомнить:
+Каждый день в `REMINDER_HOUR` (по `TIMEZONE`; на Vercel — по cron около 12:00 МСК) бот
+проверяет, кому пора напомнить:
 не раньше `REMINDER_DAY` числа месяца, не чаще выбранной студентом частоты (каждый месяц
 или раз в 3 месяца), новичкам — не в месяц регистрации. Под напоминанием есть кнопки
 «Внести взнос» и «Больше не напоминать». Пока оплата не включена (`PAYMENTS_ENABLED`
@@ -186,7 +267,8 @@ ruff check .
 # локальный запуск с PostgreSQL
 export DATABASE_URL=postgresql+asyncpg://studsbor:studsbor@localhost:5432/studsbor
 alembic upgrade head
-python -m app.bot.main
+python -m app.bot.main                    # режим polling
+uvicorn index:app --port 8000             # режим вебхука, как на Vercel
 ```
 
 Новая миграция после изменения моделей: `alembic revision --autogenerate -m "описание"`.
@@ -225,5 +307,5 @@ python -m app.bot.main
 - [x] Рейтинги за месяц и за всё время обновляются автоматически
 - [x] Напоминания по расписанию с отключением и выбором частоты
 - [x] Сборы, расходы с чеками, CSV-отчёты, рассылка, роли owner/admin
-- [x] Docker Compose, логи с ротацией, резервное копирование, инструкция
+- [x] Бесплатный запуск на Vercel + Supabase или Docker Compose на своём сервере, логи, резервное копирование, инструкция
 - [ ] Согласование платёжной схемы с вузом и ЮKassa — организационная задача до запуска

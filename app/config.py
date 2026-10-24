@@ -1,3 +1,4 @@
+import os
 from functools import lru_cache
 from typing import Annotated
 from zoneinfo import ZoneInfo
@@ -38,6 +39,13 @@ class Settings(BaseSettings):
     reminder_day: int = 1
     # Через сколько часов неоплаченный счёт перестаёт приниматься.
     invoice_ttl_hours: int = 24
+
+    # Режим вебхука (Vercel): секрет, который Telegram передаёт в заголовке,
+    # и секрет для cron-запросов (Vercel присылает его как Bearer-токен).
+    webhook_secret: str = ""
+    cron_secret: str = ""
+    # Бессерверный запуск: без пула соединений. На Vercel включается автоматически.
+    serverless: bool = Field(default_factory=lambda: bool(os.environ.get("VERCEL")))
 
     log_level: str = "INFO"
     log_dir: str = "logs"
