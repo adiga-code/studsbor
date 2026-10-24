@@ -1,8 +1,8 @@
 from aiogram.fsm.storage.base import StorageKey
-from sqlalchemy.pool import NullPool
 
 from app.bot.states import Donate
 from app.bot.storage import SqlStorage
+from app.db import session as db_session
 from app.db.session import engine_options
 
 
@@ -11,8 +11,8 @@ def test_engine_options_supabase_session_pooler():
         "postgresql://postgres.abc:p%40ss@aws-0-eu-central-1.pooler.supabase.com:5432/postgres", serverless=True
     )
     assert url == "postgresql+asyncpg://postgres.abc:p%40ss@aws-0-eu-central-1.pooler.supabase.com:5432/postgres"
-    assert options["poolclass"] is NullPool
-    assert "ssl" in options["connect_args"]
+    assert (options["pool_size"], options["pool_recycle"], options["pool_pre_ping"]) == (2, 60, True)
+    assert "ssl" in options["connect_args"] and options["connect_args"]["timeout"] == 10
     assert "statement_cache_size" not in options["connect_args"]
 
 
@@ -51,3 +51,25 @@ async def test_sql_storage(maker):
     await storage.set_state(key, None)
     await storage.set_data(key, {})
     assert await storage.get_state(key) is None and await storage.get_data(key) == {}
+
+
+async def test_engine_is_recreated_for_new_event_loop(monkeypatch):
+    """Соединения asyncpg привязаны к циклу событий — в новом цикле нужен новый движок."""
+    import asyncio
+
+    monkeypatch.setattr(db_session, "_engine", None)
+    monkeypatch.setattr(db_session, "_engine_loop", None)
+    monkeypatch.setattr(db_session, "_sessionmaker", None)
+    first = db_session.get_engine()
+    assert db_session.get_engine() is first
+
+    other = {}
+
+    def in_new_loop():
+        async def grab():
+            other["engine"] = db_session.get_engine()
+
+        asyncio.run(grab())
+
+    await asyncio.to_thread(in_new_loop)
+    assert other["engine"] is not first

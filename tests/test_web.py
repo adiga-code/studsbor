@@ -58,4 +58,6 @@ async def test_setup_registers_webhook(client, maker, monkeypatch):
 
 async def test_health(client):
     c, _ = client
-    assert (await c.get("/api/health")).json() == {"status": "ok"}
+    body = (await c.get("/api/health", params={"telegram": 1})).json()
+    assert body["status"] == "ok" and body["region"] == "local"
+    assert {"db_first_query_ms", "db_query_ms", "telegram_ms", "instance_age_s"} <= body.keys()

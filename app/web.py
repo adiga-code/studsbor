@@ -10,6 +10,7 @@ import asyncio
 import hmac
 import logging
 import os
+import time
 from functools import cache
 from pathlib import Path
 
@@ -34,6 +35,7 @@ REMINDER_TIME_BUDGET = 200
 # Сколько вебхуков Telegram шлёт одновременно: бережём лимит соединений бесплатной базы.
 WEBHOOK_MAX_CONNECTIONS = 5
 
+STARTED_AT = time.monotonic()
 setup_logging("web")
 app = FastAPI(title="Фонд студсовета", docs_url=None, redoc_url=None, openapi_url=None)
 
@@ -61,10 +63,28 @@ async def index() -> dict:
 
 
 @app.get("/api/health")
-async def health() -> dict:
+async def health(telegram: bool = False) -> dict:
+    """Проверка и диагностика задержек: /api/health?telegram=1 — ещё и замер до Telegram."""
+    timings: dict[str, float] = {}
     async with get_sessionmaker()() as session:
-        await session.execute(text("SELECT 1"))
-    return {"status": "ok"}
+        for name in ("db_first_query_ms", "db_query_ms"):
+            started = time.perf_counter()
+            await session.execute(text("SELECT 1"))
+            timings[name] = round((time.perf_counter() - started) * 1000, 1)
+    if telegram:
+        bot = create_bot()
+        try:
+            started = time.perf_counter()
+            await bot.get_me()
+            timings["telegram_ms"] = round((time.perf_counter() - started) * 1000, 1)
+        finally:
+            await bot.session.close()
+    return {
+        "status": "ok",
+        "region": os.environ.get("VERCEL_REGION", "local"),
+        "instance_age_s": round(time.monotonic() - STARTED_AT),
+        **timings,
+    }
 
 
 @app.post("/api/telegram")
@@ -75,8 +95,10 @@ async def telegram_webhook(request: Request) -> dict:
     bot = create_bot()
     try:
         update = Update.model_validate(await request.json(), context={"bot": bot})
+        started = time.perf_counter()
         try:
             await dispatcher().feed_update(bot, update)
+            log.info("Обновление %s обработано за %.0f мс", update.update_id, (time.perf_counter() - started) * 1000)
         except Exception as exc:
             log.exception("Ошибка обработки обновления %s", update.update_id)
             # Подтверждение оплаты нельзя потерять: ошибка → Telegram пришлёт его повторно

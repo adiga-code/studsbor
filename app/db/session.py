@@ -1,15 +1,17 @@
+import asyncio
 import ssl
 import uuid
 from typing import Any
 
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
-from sqlalchemy.pool import NullPool
 
 from app.config import get_settings
 
 _engine: AsyncEngine | None = None
+_engine_loop: asyncio.AbstractEventLoop | None = None
 _sessionmaker: async_sessionmaker[AsyncSession] | None = None
+_override: async_sessionmaker[AsyncSession] | None = None
 
 # Порт пулера Supabase в режиме transaction (PgBouncer/Supavisor): там нельзя
 # переиспользовать подготовленные запросы между транзакциями.
@@ -46,30 +48,51 @@ def engine_options(database_url: str, serverless: bool = False) -> tuple[str, di
     url = url.set(query=query)
 
     if serverless:
-        # Между вызовами функции соединения не живут — пул только мешает.
-        options = {"poolclass": NullPool}
+        # Маленький пул: соединения переиспользуются в рамках «тёплого» экземпляра
+        # функции, а не открываются заново на каждое обращение к базе (это и есть
+        # основная задержка). Старые соединения выбрасываются, не дожидаясь обрыва.
+        options.update(pool_size=2, max_overflow=3, pool_recycle=60, pool_timeout=10)
+        connect_args["timeout"] = 10
     if connect_args:
         options["connect_args"] = connect_args
     return url.render_as_string(hide_password=False), options
 
 
+def _current_loop() -> asyncio.AbstractEventLoop | None:
+    try:
+        return asyncio.get_running_loop()
+    except RuntimeError:
+        return None
+
+
 def get_engine() -> AsyncEngine:
-    global _engine
-    if _engine is None:
+    """Движок привязан к циклу событий: соединения asyncpg нельзя использовать из другого.
+
+    Если платформа запустила обработчик в новом цикле, создаётся новый движок, а
+    старые соединения закрываются сборщиком мусора.
+    """
+    global _engine, _engine_loop, _sessionmaker
+    loop = _current_loop()
+    if _engine is None or (loop is not None and _engine_loop is not None and loop is not _engine_loop):
         settings = get_settings()
         url, options = engine_options(settings.database_url, settings.serverless)
         _engine = create_async_engine(url, **options)
+        _engine_loop = loop
+        _sessionmaker = None
     return _engine
 
 
 def get_sessionmaker() -> async_sessionmaker[AsyncSession]:
     global _sessionmaker
+    if _override is not None:
+        return _override
+    engine = get_engine()
     if _sessionmaker is None:
-        _sessionmaker = async_sessionmaker(get_engine(), expire_on_commit=False)
+        _sessionmaker = async_sessionmaker(engine, expire_on_commit=False)
     return _sessionmaker
 
 
-def set_sessionmaker(maker: async_sessionmaker[AsyncSession]) -> None:
+def set_sessionmaker(maker: async_sessionmaker[AsyncSession] | None) -> None:
     """Подмена фабрики сессий (используется в тестах)."""
-    global _sessionmaker
-    _sessionmaker = maker
+    global _override
+    _override = maker
